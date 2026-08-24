@@ -1008,6 +1008,9 @@ struct hostapd_bss_config {
 	unsigned int pmksa_caching_privacy:1;
 	unsigned int eap_using_authentication_frames:1;
 #endif /* CONFIG_ENC_ASSOC  */
+
+	int *security_profiles; /* -1 terminated array of enabled security
+				 * profiles */
 };
 
 /**
