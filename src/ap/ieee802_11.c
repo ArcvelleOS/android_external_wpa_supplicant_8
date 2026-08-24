@@ -1905,9 +1905,7 @@ static void sae_pick_next_group(struct hostapd_data *hapd, struct sta_info *sta)
 
 	if (!groups) {
 		groups = default_groups;
-		if (wpa_key_mgmt_sae_ext_key(conf->wpa_key_mgmt |
-					     conf->rsn_override_key_mgmt |
-					     conf->rsn_override_key_mgmt_2))
+		if (hostapd_config_sae_ext_key(conf))
 			default_groups[1] = 20;
 	}
 
@@ -1982,9 +1980,7 @@ static int sae_is_group_enabled(struct hostapd_data *hapd, int group)
 
 	if (!groups) {
 		groups = default_groups;
-		if (wpa_key_mgmt_sae_ext_key(conf->wpa_key_mgmt |
-					     conf->rsn_override_key_mgmt |
-					     conf->rsn_override_key_mgmt_2))
+		if (hostapd_config_sae_ext_key(conf))
 			default_groups[1] = 20;
 	}
 
@@ -2052,9 +2048,7 @@ static void handle_auth_sae(struct hostapd_data *hapd, struct sta_info *sta,
 
 	if (!groups) {
 		groups = default_groups;
-		if (wpa_key_mgmt_sae_ext_key(conf->wpa_key_mgmt |
-					     conf->rsn_override_key_mgmt |
-					     conf->rsn_override_key_mgmt_2))
+		if (hostapd_config_sae_ext_key(conf))
 			default_groups[1] = 20;
 	}
 
@@ -2766,7 +2760,9 @@ u16 wpa_auth_validate_802_1x_frame(struct hostapd_data *hapd,
 		wpa_printf(MSG_DEBUG, "Received pairwise cipher (0x%x) in RSNE",
 			   rsn.pairwise_cipher);
 
-		if (!(rsn.key_mgmt & hapd->conf->wpa_key_mgmt)) {
+		if (!(rsn.key_mgmt &
+		      (hapd->conf->wpa_key_mgmt |
+		       hostapd_config_sp_key_mgmt(hapd->conf)))) {
 			wpa_printf(MSG_INFO, "Invalid key mgmt (0x%x) in RSNE",
 				   rsn.key_mgmt);
 			return WPA_INVALID_AKMP;
@@ -4256,9 +4252,7 @@ static void hapd_initialize_pasn(struct hostapd_data *hapd,
 		pasn_set_own_mld_addr(pasn, hapd->mld->mld_addr);
 #endif /* CONFIG_IEEE80211BE && CONFIG_ENC_ASSOC */
 	pasn_set_peer_addr(pasn, sta->addr);
-	pasn_set_wpa_key_mgmt(pasn, hapd->conf->wpa_key_mgmt |
-			      hapd->conf->rsn_override_key_mgmt |
-			      hapd->conf->rsn_override_key_mgmt_2);
+	pasn_set_wpa_key_mgmt(pasn, hostapd_config_all_key_mgmt(hapd->conf));
 	pasn_set_rsn_pairwise(pasn, hapd->conf->rsn_pairwise |
 			      hapd->conf->rsn_override_pairwise);
 	pasn_set_mfp(pasn, hapd->conf->ieee80211w);
@@ -4672,9 +4666,7 @@ static void handle_auth(struct hostapd_data *hapd,
 #endif /* CONFIG_IEEE80211R_AP */
 #ifdef CONFIG_SAE
 	      (hapd->conf->wpa &&
-	       wpa_key_mgmt_sae(hapd->conf->wpa_key_mgmt |
-				hapd->conf->rsn_override_key_mgmt |
-				hapd->conf->rsn_override_key_mgmt_2) &&
+	       wpa_key_mgmt_sae(hostapd_config_all_key_mgmt(hapd->conf)) &&
 	       auth_alg == WLAN_AUTH_SAE) ||
 #endif /* CONFIG_SAE */
 #ifdef CONFIG_FILS
@@ -4691,9 +4683,8 @@ static void handle_auth(struct hostapd_data *hapd,
 #endif /* CONFIG_PASN */
 #ifdef CONFIG_ENC_ASSOC
 	      (hapd->conf->wpa &&
-	       ((hapd->conf->wpa_key_mgmt |
-		 hapd->conf->rsn_override_key_mgmt |
-		 hapd->conf->rsn_override_key_mgmt_2) & WPA_KEY_MGMT_EPPKE) &&
+	       ((hostapd_config_all_key_mgmt(hapd->conf)) &
+		WPA_KEY_MGMT_EPPKE) &&
 	       hapd->conf->assoc_frame_encryption &&
 	       auth_alg == WLAN_AUTH_EPPKE) ||
 #endif /* CONFIG_ENC_ASSOC */
@@ -6352,9 +6343,7 @@ skip_pmkid_update:
 #endif /* CONFIG_SAE */
 
 #ifdef CONFIG_OWE
-		if (((hapd->conf->wpa_key_mgmt |
-		      hapd->conf->rsn_override_key_mgmt |
-		      hapd->conf->rsn_override_key_mgmt_2) &
+		if (((hostapd_config_all_key_mgmt(hapd->conf)) &
 		     WPA_KEY_MGMT_OWE) &&
 		    wpa_auth_sta_key_mgmt(sta->wpa_sm) == WPA_KEY_MGMT_OWE &&
 		    elems->owe_dh) {
@@ -7076,7 +7065,8 @@ static u16 send_assoc_resp(struct hostapd_data *hapd, struct sta_info *sta,
 		buflen += 150;
 #endif /* CONFIG_FILS */
 #ifdef CONFIG_OWE
-	if (sta && (hapd->conf->wpa_key_mgmt & WPA_KEY_MGMT_OWE))
+	if (sta &&
+	    ((hostapd_config_all_key_mgmt(hapd->conf)) & WPA_KEY_MGMT_OWE))
 		buflen += 150;
 #endif /* CONFIG_OWE */
 #ifdef CONFIG_DPP2
@@ -7172,10 +7162,7 @@ static u16 send_assoc_resp(struct hostapd_data *hapd, struct sta_info *sta,
 
 #ifdef CONFIG_OWE
 	if (sta && status_code == WLAN_STATUS_SUCCESS &&
-	    ((hapd->conf->wpa_key_mgmt |
-	      hapd->conf->rsn_override_key_mgmt |
-	      hapd->conf->rsn_override_key_mgmt_2) &
-	     WPA_KEY_MGMT_OWE))
+	    ((hostapd_config_all_key_mgmt(hapd->conf)) & WPA_KEY_MGMT_OWE))
 		p = wpa_auth_write_assoc_resp_owe(sta->wpa_sm, p,
 						  buf + buflen - p);
 #endif /* CONFIG_OWE */
@@ -7272,8 +7259,7 @@ rsnxe_done:
 #endif /* CONFIG_IEEE80211BN */
 
 #ifdef CONFIG_OWE
-	if (((hapd->conf->wpa_key_mgmt | hapd->conf->rsn_override_key_mgmt |
-	      hapd->conf->rsn_override_key_mgmt_2) & WPA_KEY_MGMT_OWE) &&
+	if (((hostapd_config_all_key_mgmt(hapd->conf)) & WPA_KEY_MGMT_OWE) &&
 	    sta && sta->owe_ecdh && status_code == WLAN_STATUS_SUCCESS &&
 	    wpa_auth_sta_key_mgmt(sta->wpa_sm) == WPA_KEY_MGMT_OWE &&
 	    !wpa_auth_sta_get_pmksa(sta->wpa_sm)) {
