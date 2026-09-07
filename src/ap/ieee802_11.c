@@ -251,7 +251,8 @@ static bool hostapd_sec_prof_enabled(const struct hostapd_bss_config *conf,
 /**
  * find_and_validate_profile - Find and validate a matching security profile
  * @hapd: AP data
- * @addr: STA MAC address (for logging)
+ * @sta: Station
+ * @assoc: Whether this is for (Re)Association Request frame
  * @sta_profile_num: Security profile number from STA's Security Profile element
  * @rsne_data: Parsed RSNE data from STA
  * @rsnxe: STA's RSNXE data
@@ -261,7 +262,7 @@ static bool hostapd_sec_prof_enabled(const struct hostapd_bss_config *conf,
  * otherwise
  */
 static bool find_and_validate_profile(
-	struct hostapd_data *hapd, const u8 *addr,
+	struct hostapd_data *hapd, struct sta_info *sta, bool assoc,
 	int sta_profile_num,
 	const struct wpa_ie_data *rsne_data,
 	const u8 *rsnxe, size_t rsnxe_len,
@@ -274,7 +275,7 @@ static bool find_and_validate_profile(
 		wpa_printf(MSG_INFO,
 			   "Station " MACSTR
 			   " security profile number %d not enabled in AP's configuration",
-			   MAC2STR(addr), sta_profile_num);
+			   MAC2STR(sta->addr), sta_profile_num);
 		return false;
 	}
 
@@ -329,6 +330,17 @@ static bool find_and_validate_profile(
 		return false;
 	}
 
+	if (assoc && entry->assoc_frame_encrypt &&
+	    entry->key_mgmt == (WPA_KEY_MGMT_EPPKE |
+				WPA_KEY_MGMT_SAE_EXT_KEY) &&
+	    sta->auth_alg != WLAN_AUTH_EPPKE &&
+	    rsne_data->key_mgmt != WPA_KEY_MGMT_EPPKE) {
+		wpa_printf(MSG_DEBUG,
+			   "Security profile number %d requires EPPKE[SAE], but STA used SAE-EXT-KEY without EPPKE",
+			   sta_profile_num);
+		return false;
+	}
+
 	if (entry->pmksa_caching_privacy &&
 	    !ieee802_11_rsnx_capab_len(rsnxe, rsnxe_len,
 				       WLAN_RSNX_CAPAB_PMKSA_CACHING_PRIVACY)) {
@@ -341,7 +353,7 @@ static bool find_and_validate_profile(
 	wpa_printf(MSG_DEBUG,
 		   "Station " MACSTR
 		   " indicated security profile number %d matches (key_mgmt=0x%x cipher=0x%x)",
-		   MAC2STR(addr), sta_profile_num,
+		   MAC2STR(sta->addr), sta_profile_num,
 		   entry->key_mgmt, entry->pairwise_cipher);
 	if (profile_matched)
 		*profile_matched = entry;
@@ -352,7 +364,8 @@ static bool find_and_validate_profile(
 /**
  * validate_sta_security_profile - Validate STA's Security Profile element
  * @hapd: AP data
- * @addr: STA MAC address (for logging)
+ * @sta: Station
+ * @assoc: Whether this is for (Re)Association Request frame
  * @wpa_ie: STA's RSNE (including EID and Length)
  * @wpa_ie_len: Length of wpa_ie
  * @rsnxe: STA's RSNXE (including EID and Length), or NULL
@@ -366,7 +379,7 @@ static bool find_and_validate_profile(
  * AP's advertised profiles and that the RSNE/RSNXE fields are consistent.
  */
 static bool validate_sta_security_profile(
-	struct hostapd_data *hapd, const u8 *addr,
+	struct hostapd_data *hapd, struct sta_info *sta, bool assoc,
 	const u8 *rsne, size_t rsne_len,
 	const u8 *rsnxe, size_t rsnxe_len,
 	const u8 *sec_prof, size_t sec_prof_len,
@@ -379,18 +392,18 @@ static bool validate_sta_security_profile(
 		return true; /* No profiles configured, allow */
 
 	wpa_printf(MSG_DEBUG, "Validating security profile for STA " MACSTR,
-		   MAC2STR(addr));
+		   MAC2STR(sta->addr));
 
 	/* Parse station's RSNE */
 	if (!rsne || rsne_len < 2) {
 		wpa_printf(MSG_INFO, "UHR: Station " MACSTR " missing RSNE",
-			   MAC2STR(addr));
+			   MAC2STR(sta->addr));
 		return false;
 	}
 
 	if (wpa_parse_wpa_ie_rsn(rsne - 2, rsne_len + 2, &data) < 0) {
 		wpa_printf(MSG_INFO, "Station " MACSTR " used an invalid RSNE",
-			   MAC2STR(addr));
+			   MAC2STR(sta->addr));
 		return false;
 	}
 
@@ -400,15 +413,15 @@ static bool validate_sta_security_profile(
 		wpa_printf(MSG_INFO,
 			   "Station " MACSTR
 			   " did not indicate a valid security profile number",
-			   MAC2STR(addr));
+			   MAC2STR(sta->addr));
 		return false;
 	}
 
 	wpa_printf(MSG_DEBUG, "STA " MACSTR " profile number: %d",
-		   MAC2STR(addr), sta_profile_num);
+		   MAC2STR(sta->addr), sta_profile_num);
 
 	/* Use the helper function to find and validate the profile */
-	return find_and_validate_profile(hapd, addr, sta_profile_num,
+	return find_and_validate_profile(hapd, sta, assoc, sta_profile_num,
 					 &data, rsnxe, rsnxe_len,
 					 profile_matched);
 }
@@ -417,7 +430,8 @@ static bool validate_sta_security_profile(
 /**
  * validate_security_profile - Security Profile validation
  * @hapd: hostapd BSS data structure
- * @sta_info: Station address.
+ * @sta: Station
+ * @assoc: Whether this is for (Re)Association Request frame
  * @elems: Pre-parsed elements (caller is responsible for parsing)
  * @auth_context: Authentication context string (e.g., "SAE", "PASN", "802.1X")
  * @profile_matched: On success, returns the matched profile entry
@@ -430,14 +444,11 @@ static bool validate_sta_security_profile(
 static u16 validate_security_profile(
 	struct hostapd_data *hapd,
 	struct sta_info *sta,
+	bool assoc,
 	struct ieee802_11_elems *elems,
 	const char *auth_context,
 	const struct security_profile_entry **profile_matched)
 {
-	u8 *addr;
-
-	addr = sta->addr;
-
 	/* Skip validation if no Security Profiles are configured */
 	if (!hapd->conf->security_profiles)
 		return WLAN_STATUS_SUCCESS;
@@ -451,11 +462,12 @@ static u16 validate_security_profile(
 	wpa_printf(MSG_DEBUG,
 		   "Validating Security Profile element from " MACSTR
 		   " in %s auth (body_len=%u)",
-		   MAC2STR(addr), auth_context, elems->security_profile_len);
+		   MAC2STR(sta->addr), auth_context,
+		   elems->security_profile_len);
 
 	/* Perform validation */
 	if (!validate_sta_security_profile(
-		    hapd, addr,
+		    hapd, sta, assoc,
 		    elems->rsn_ie, elems->rsn_ie_len,
 		    elems->rsnxe, elems->rsnxe_len,
 		    elems->security_profile, elems->security_profile_len,
@@ -463,14 +475,14 @@ static u16 validate_security_profile(
 		wpa_printf(MSG_INFO,
 			   "Rejecting %s auth from " MACSTR
 			   " - Security Profile element mismatch",
-			   auth_context, MAC2STR(addr));
+			   auth_context, MAC2STR(sta->addr));
 		return WLAN_STATUS_REJECTED_INVALID_SECURITY_PROFILE;
 	}
 
 	wpa_printf(MSG_DEBUG,
 		   "Security Profile element validated for " MACSTR
 		   " in %s auth",
-		   MAC2STR(addr), auth_context);
+		   MAC2STR(sta->addr), auth_context);
 
 #ifdef CONFIG_PASN
 	sta->sec_prof_used = true;
@@ -2286,7 +2298,7 @@ static void handle_auth_sae(struct hostapd_data *hapd, struct sta_info *sta,
 				goto reply;
 			}
 			resp = validate_security_profile(
-				hapd, sta, &elems, "SAE", NULL);
+				hapd, sta, false, &elems, "SAE", NULL);
 			if (resp != WLAN_STATUS_SUCCESS)
 				goto reply;
 		}
@@ -3083,7 +3095,7 @@ static void handle_auth_802_1x(struct hostapd_data *hapd, struct sta_info *sta,
 				    elems.security_profile_len);
 
 			if (!validate_sta_security_profile(
-				    hapd, sta->addr,
+				    hapd, sta, false,
 				    elems.rsn_ie, elems.rsn_ie_len,
 				    elems.rsnxe, elems.rsnxe_len,
 				    elems.security_profile,
@@ -3458,8 +3470,8 @@ void handle_auth_fils(struct hostapd_data *hapd, struct sta_info *sta,
 	}
 
 	if (hapd->conf->security_profiles) {
-		resp = validate_security_profile(hapd, sta, &elems, "FILS",
-						 NULL);
+		resp = validate_security_profile(hapd, sta, false, &elems,
+						 "FILS", NULL);
 		if (!resp)
 			goto fail;
 	}
@@ -4522,7 +4534,7 @@ static void handle_auth_pasn(struct hostapd_data *hapd, struct sta_info *sta,
 		 * REJECTED_INVALID_SECURITY_PROFILE on mismatch.
 		 */
 		if (hapd->conf->security_profiles &&
-		    validate_security_profile(hapd, sta, &elems, "PASN",
+		    validate_security_profile(hapd, sta, false, &elems, "PASN",
 					      NULL)) {
 			wpa_printf(MSG_INFO, "PASN: Rejecting auth from " MACSTR
 				   " - security profile mismatch",
@@ -5086,8 +5098,8 @@ static void handle_auth(struct hostapd_data *hapd,
 					   __func__);
 				goto fail;
 			}
-			if (validate_security_profile(hapd, sta, &elems, "FT",
-						      NULL))
+			if (validate_security_profile(hapd, sta, false, &elems,
+						      "FT", NULL))
 				goto fail;
 		}
 		wpa_ft_process_auth(sta->wpa_sm,
@@ -5158,7 +5170,7 @@ static void handle_auth(struct hostapd_data *hapd,
 				   __func__);
 			goto fail;
 		}
-		if (validate_security_profile(hapd, sta, &elems,
+		if (validate_security_profile(hapd, sta, false, &elems,
 					      "Other auth_alg", NULL))
 			goto fail;
 	}
@@ -6053,7 +6065,7 @@ static int __check_assoc_ies(struct hostapd_data *hapd, struct sta_info *sta,
 
 		if (hapd->conf->security_profiles) {
 			resp = validate_security_profile(
-				hapd, sta, elems,
+				hapd, sta, true, elems,
 				type == LINK_PARSE_REASSOC ?
 				"Reassoc" : "Assoc", &matched_profile);
 			if (resp != WLAN_STATUS_SUCCESS) {
@@ -6206,7 +6218,8 @@ static int __check_assoc_ies(struct hostapd_data *hapd, struct sta_info *sta,
 		if (hapd->conf->security_profiles && !matched_profile &&
 		    elems->security_profile) {
 			u16 sp_resp = validate_security_profile(
-				hapd, sta, elems, type == LINK_PARSE_REASSOC ?
+				hapd, sta, true, elems,
+				type == LINK_PARSE_REASSOC ?
 				"Reassoc" : "Assoc", &matched_profile);
 
 			if (sp_resp != WLAN_STATUS_SUCCESS) {
